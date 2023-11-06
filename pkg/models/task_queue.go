@@ -24,8 +24,8 @@ type TaskQueue struct {
 	ID            uuid.UUID
 	Name          string
 	TokenBucketID uuid.UUID
-	TokenBucket   TokenBucket `gorm:"foreignKey:TokenBucketID;references:ID"`
-	store         store.QueueStore
+	TokenBucket   TokenBucket      `gorm:"foreignKey:TokenBucketID;references:ID"`
+	Store         store.QueueStore `gorm:"-"`
 }
 
 func InitTaskQueueManager(noOfPoolWorkers int, db *gorm.DB) (*TaskQueueManager, error) {
@@ -34,8 +34,20 @@ func InitTaskQueueManager(noOfPoolWorkers int, db *gorm.DB) (*TaskQueueManager, 
 	if err != nil {
 		return nil, err
 	}
+
+	var existingQueues []TaskQueue
+	_ = db.Preload("TokenBucket").Find(&existingQueues)
+	taskQueues := make(map[uuid.UUID]*TaskQueue)
+	for _, queue := range existingQueues {
+		queue.Store = store.NewInMemQueue()
+		queue.TokenBucket.NotifyWorker = make(chan bool)
+		queue.TokenBucket.NoOfTokens = queue.TokenBucket.MaxTokens
+		log.Printf("Loaded Queue %+v\n", queue)
+		taskQueues[queue.ID] = &queue
+	}
+
 	manager := &TaskQueueManager{
-		taskQueues:      make(map[uuid.UUID]*TaskQueue),
+		taskQueues:      taskQueues,
 		workerPool:      workerPool,
 		taskStateUpdate: taskStateUpdate,
 		shutdownManager: make(chan struct{}),
@@ -60,7 +72,7 @@ func (manager *TaskQueueManager) CreateQueue(name string, bucketSize, refreshRat
 		Name:          name,
 		TokenBucketID: tokenBucket.ID,
 		TokenBucket:   tokenBucket,
-		store:         store.NewInMemQueue(),
+		Store:         store.NewInMemQueue(),
 	}
 	manager.db.Create(taskQueue)
 	manager.taskQueues[id] = taskQueue
@@ -72,7 +84,7 @@ func (manager *TaskQueueManager) NewTask(t *tasks.Task) (*tasks.Task, error) {
 		t.State = tasks.RECEIVED
 		t.NoOfRetries = 0
 		t.ID = uuid.New()
-		queue.store.Enqueue(t)
+		queue.Store.Enqueue(t)
 
 		go func(wp *workers.Pool) {
 			log.Println("Usap u novu rutinu")
